@@ -5,8 +5,13 @@ const {
   VoiceConnectionStatus,
   entersState,
   joinVoiceChannel,
+  StreamType,
 } = require('@discordjs/voice');
-const play = require('play-dl');
+const { spawn } = require('child_process');
+const path = require('path');
+const ffmpegPath = require('ffmpeg-static');
+
+const YTDLP = path.join(__dirname, '..', 'yt-dlp.exe');
 
 class MusicQueue {
   constructor() {
@@ -16,6 +21,8 @@ class MusicQueue {
     this.connection = null;
     this.textChannel = null;
     this.loop = false;
+    this._ytdlp = null;
+    this._ffmpeg = null;
 
     this.player.on(AudioPlayerStatus.Idle, () => this._onIdle());
     this.player.on('error', (err) => {
@@ -60,10 +67,9 @@ class MusicQueue {
     }
   }
 
-  async skip() {
-    if (this.player.state.status !== AudioPlayerStatus.Idle) {
-      this.player.stop(true);
-    }
+  skip() {
+    this._killProcesses();
+    this.player.stop(true);
   }
 
   pause() {
@@ -77,6 +83,7 @@ class MusicQueue {
   stop() {
     this.tracks = [];
     this.loop = false;
+    this._killProcesses();
     this.player.stop(true);
   }
 
@@ -92,20 +99,56 @@ class MusicQueue {
     return this.player.state.status;
   }
 
-  async _play(track) {
+  _killProcesses() {
+    try { this._ytdlp?.kill(); } catch {}
+    try { this._ffmpeg?.kill(); } catch {}
+    this._ytdlp = null;
+    this._ffmpeg = null;
+  }
+
+  _play(track) {
     this.current = track;
-    try {
-      const stream = await play.stream(track.url, { quality: 2 });
-      const resource = createAudioResource(stream.stream, {
-        inputType: stream.type,
-      });
-      this.player.play(resource);
-      this.textChannel?.send(`Now playing: **${track.title}** (${track.duration})`);
-    } catch (err) {
-      console.error('Stream error:', err.message);
+
+    const ytdlp = spawn(YTDLP, [
+      '--no-playlist',
+      '-f', 'bestaudio',
+      '-o', '-',
+      '--quiet',
+      '--no-warnings',
+      track.url,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    const ffmpeg = spawn(ffmpegPath, [
+      '-i', 'pipe:0',
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'ignore'] });
+
+    this._ytdlp = ytdlp;
+    this._ffmpeg = ffmpeg;
+
+    ytdlp.stdout.pipe(ffmpeg.stdin);
+
+    ytdlp.on('error', (err) => {
+      console.error('yt-dlp error:', err.message);
+      ffmpeg.kill();
+      this.textChannel?.send(`Failed to play **${track.title}**. Is yt-dlp.exe in the project folder?`);
+      this._advance();
+    });
+
+    ffmpeg.on('error', (err) => {
+      console.error('ffmpeg error:', err.message);
       this.textChannel?.send(`Failed to play **${track.title}**. Skipping...`);
       this._advance();
-    }
+    });
+
+    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+    this.player.play(resource);
+    this.textChannel?.send(`Now playing: **${track.title}** (${track.duration})`);
   }
 
   _onIdle() {
@@ -125,7 +168,6 @@ class MusicQueue {
   }
 }
 
-// One queue per guild
 const queues = new Map();
 
 function getQueue(guildId) {

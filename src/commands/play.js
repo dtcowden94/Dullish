@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const play = require('play-dl');
+const YouTube = require('youtube-sr').default;
 const { getOrCreateQueue } = require('../player');
 
 module.exports = {
@@ -28,22 +28,21 @@ module.exports = {
 
     let trackInfo;
     try {
-      if (play.yt_validate(query) === 'video') {
-        const info = await play.video_info(query);
-        trackInfo = {
-          title: info.video_details.title,
-          url: info.video_details.url,
-          duration: info.video_details.durationRaw,
-          requestedBy: interaction.user.tag,
-        };
-      } else {
-        const results = await play.search(query, { limit: 1 });
-        if (!results.length) return interaction.editReply('No results found.');
-        const video = results[0];
+      if (YouTube.validate(query, 'VIDEO')) {
+        const video = await YouTube.getVideo(query);
         trackInfo = {
           title: video.title,
           url: video.url,
-          duration: video.durationRaw,
+          duration: video.durationFormatted,
+          requestedBy: interaction.user.tag,
+        };
+      } else {
+        const video = await YouTube.searchOne(query);
+        if (!video) return interaction.editReply('No results found.');
+        trackInfo = {
+          title: video.title,
+          url: video.url,
+          duration: video.durationFormatted,
           requestedBy: interaction.user.tag,
         };
       }
@@ -72,3 +71,9 @@ module.exports = {
     }
   },
 };
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
