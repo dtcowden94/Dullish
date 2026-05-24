@@ -133,6 +133,9 @@ class MusicQueue {
 
     ytdlp.stdout.pipe(ffmpeg.stdin);
 
+    ytdlp.stdout.on('error', () => {});
+    ffmpeg.stdin.on('error', () => {});
+
     ytdlp.on('error', (err) => {
       console.error('yt-dlp error:', err.message);
       ffmpeg.kill();
