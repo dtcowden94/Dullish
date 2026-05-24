@@ -156,18 +156,37 @@ class MusicQueue {
   async _play(track) {
     this.current = track;
 
-    // Disable buttons on the previous now-playing message
     if (this._nowPlayingMessage) {
       try { await this._nowPlayingMessage.edit({ components: [] }); } catch {}
       this._nowPlayingMessage = null;
     }
 
+    try {
+      if (track.isLive) {
+        await this._playLive(track);
+      } else {
+        this._playVideo(track);
+      }
+
+      this._nowPlayingMessage = await this.textChannel?.send({
+        embeds: [this.buildEmbed()],
+        components: [this.buildRow()],
+      });
+    } catch (err) {
+      console.error('Play error:', err.message);
+      this.textChannel?.send(`Failed to play **${track.title}**. Skipping...`);
+      this._advance();
+    }
+  }
+
+  _playVideo(track) {
     const ytdlp = spawn(YTDLP, [
       '--no-playlist',
       '-f', 'bestaudio',
       '-o', '-',
       '--quiet',
       '--no-warnings',
+      '--js-runtimes', 'node',
       track.url,
     ], { stdio: ['ignore', 'pipe', 'ignore'] });
 
@@ -203,13 +222,55 @@ class MusicQueue {
 
     const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
     this.player.play(resource);
+  }
 
-    try {
-      this._nowPlayingMessage = await this.textChannel?.send({
-        embeds: [this.buildEmbed()],
-        components: [this.buildRow()],
+  async _playLive(track) {
+    // Get the direct stream URL from yt-dlp first
+    const streamUrl = await new Promise((resolve, reject) => {
+      const ytdlp = spawn(YTDLP, [
+        '--no-playlist',
+        '-f', 'bestaudio/best',
+        '--get-url',
+        '--js-runtimes', 'node',
+        track.url,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      this._ytdlp = ytdlp;
+
+      let output = '';
+      ytdlp.stdout.on('data', (chunk) => { output += chunk.toString(); });
+      ytdlp.on('close', (code) => {
+        const url = output.trim().split('\n')[0];
+        if (code === 0 && url) resolve(url);
+        else reject(new Error('yt-dlp failed to get livestream URL'));
       });
-    } catch {}
+      ytdlp.on('error', reject);
+    });
+
+    // Pass the direct URL to ffmpeg with reconnect support
+    const ffmpeg = spawn(ffmpegPath, [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', streamUrl,
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    this._ffmpeg = ffmpeg;
+
+    ffmpeg.on('error', (err) => {
+      console.error('ffmpeg error:', err.message);
+      this.textChannel?.send(`Livestream error for **${track.title}**. Skipping...`);
+      this._advance();
+    });
+
+    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+    this.player.play(resource);
   }
 
   _onIdle() {
