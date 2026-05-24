@@ -7,6 +7,12 @@ const {
   joinVoiceChannel,
   StreamType,
 } = require('@discordjs/voice');
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require('discord.js');
 const { spawn } = require('child_process');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
@@ -23,6 +29,7 @@ class MusicQueue {
     this.loop = false;
     this._ytdlp = null;
     this._ffmpeg = null;
+    this._nowPlayingMessage = null;
 
     this.player.on(AudioPlayerStatus.Idle, () => this._onIdle());
     this.player.on('error', (err) => {
@@ -72,12 +79,13 @@ class MusicQueue {
     this.player.stop(true);
   }
 
-  pause() {
-    return this.player.pause();
-  }
-
-  unpause() {
-    return this.player.unpause();
+  togglePause() {
+    if (this.player.state.status === AudioPlayerStatus.Paused) {
+      this.player.unpause();
+      return false;
+    }
+    this.player.pause();
+    return true;
   }
 
   stop() {
@@ -99,6 +107,45 @@ class MusicQueue {
     return this.player.state.status;
   }
 
+  clearNowPlayingRef() {
+    this._nowPlayingMessage = null;
+  }
+
+  buildEmbed() {
+    const paused = this.player.state.status === AudioPlayerStatus.Paused;
+    return new EmbedBuilder()
+      .setTitle(paused ? '⏸ Paused' : '🎵 Now Playing')
+      .setDescription(`**${this.current.title}**`)
+      .addFields(
+        { name: 'Duration', value: this.current.duration, inline: true },
+        { name: 'Requested by', value: this.current.requestedBy, inline: true },
+        { name: 'Up Next', value: this.tracks.length ? `${this.tracks.length} song(s)` : 'Nothing', inline: true },
+      )
+      .setColor(paused ? 0xffa500 : 0x5865f2);
+  }
+
+  buildRow() {
+    const paused = this.player.state.status === AudioPlayerStatus.Paused;
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('music_pause')
+        .setLabel(paused ? '▶ Resume' : '⏸ Pause')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('music_skip')
+        .setLabel('⏭ Skip')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('music_loop')
+        .setLabel('🔁 Loop')
+        .setStyle(this.loop ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('music_stop')
+        .setLabel('⏹ Stop')
+        .setStyle(ButtonStyle.Danger),
+    );
+  }
+
   _killProcesses() {
     try { this._ytdlp?.kill(); } catch {}
     try { this._ffmpeg?.kill(); } catch {}
@@ -106,8 +153,14 @@ class MusicQueue {
     this._ffmpeg = null;
   }
 
-  _play(track) {
+  async _play(track) {
     this.current = track;
+
+    // Disable buttons on the previous now-playing message
+    if (this._nowPlayingMessage) {
+      try { await this._nowPlayingMessage.edit({ components: [] }); } catch {}
+      this._nowPlayingMessage = null;
+    }
 
     const ytdlp = spawn(YTDLP, [
       '--no-playlist',
@@ -132,7 +185,6 @@ class MusicQueue {
     this._ffmpeg = ffmpeg;
 
     ytdlp.stdout.pipe(ffmpeg.stdin);
-
     ytdlp.stdout.on('error', () => {});
     ffmpeg.stdin.on('error', () => {});
 
@@ -151,7 +203,13 @@ class MusicQueue {
 
     const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
     this.player.play(resource);
-    this.textChannel?.send(`Now playing: **${track.title}** (${track.duration})`);
+
+    try {
+      this._nowPlayingMessage = await this.textChannel?.send({
+        embeds: [this.buildEmbed()],
+        components: [this.buildRow()],
+      });
+    } catch {}
   }
 
   _onIdle() {
@@ -162,11 +220,20 @@ class MusicQueue {
     this._advance();
   }
 
-  _advance() {
+  async _advance() {
     if (this.tracks.length > 0) {
       this._play(this.tracks.shift());
     } else {
       this.current = null;
+      if (this._nowPlayingMessage) {
+        try {
+          await this._nowPlayingMessage.edit({
+            embeds: [new EmbedBuilder().setDescription('Queue ended.').setColor(0x5865f2)],
+            components: [],
+          });
+        } catch {}
+        this._nowPlayingMessage = null;
+      }
     }
   }
 }
