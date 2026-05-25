@@ -2,7 +2,8 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Collection, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { getQueue, deleteQueue } = require('./src/player');
+const { getQueue, getOrCreateQueue, deleteQueue } = require('./src/player');
+const { loadSound } = require('./src/soundboard');
 
 const client = new Client({
   intents: [
@@ -74,6 +75,30 @@ client.on('interactionCreate', async (interaction) => {
         embeds: [queue.buildEmbed()],
         components: [queue.buildRow()],
       }).catch(() => {});
+
+    } else if (id.startsWith('sound_')) {
+      const filename = id.slice('sound_'.length);
+      const voiceChannel = interaction.member?.voice?.channel;
+      if (!voiceChannel) {
+        return interaction.reply({ content: 'You must be in a voice channel.', ephemeral: true });
+      }
+
+      let buffer;
+      try {
+        buffer = await loadSound(filename);
+      } catch {
+        return interaction.reply({ content: 'Failed to load that sound.', ephemeral: true });
+      }
+
+      const q = getOrCreateQueue(interaction.guildId);
+      if (!q.connection) {
+        try { await q.connect(voiceChannel, interaction.channel); } catch (err) {
+          return interaction.reply({ content: err.message, ephemeral: true });
+        }
+      }
+
+      q.playSound(buffer);
+      return interaction.reply({ content: `🔊 **${filename.replace(/\.[^.]+$/, '')}**`, ephemeral: true });
 
     } else if (id === 'music_stop') {
       queue.clearNowPlayingRef();

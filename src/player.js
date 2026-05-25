@@ -16,6 +16,8 @@ const {
 const { spawn } = require('child_process');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
+const PCMMixer = require('./mixer');
+const { Readable } = require('stream');
 
 const YTDLP = path.join(__dirname, '..', 'yt-dlp.exe');
 
@@ -29,6 +31,7 @@ class MusicQueue {
     this.loop = false;
     this._ytdlp = null;
     this._ffmpeg = null;
+    this._mixer = null;
     this._nowPlayingMessage = null;
 
     this.player.on(AudioPlayerStatus.Idle, () => this._onIdle());
@@ -146,11 +149,25 @@ class MusicQueue {
     );
   }
 
+  playSound(buffer) {
+    if (this._mixer && !this._mixer.destroyed) {
+      this._mixer.addSound(buffer);
+      return;
+    }
+    // No music playing — play the sound directly
+    const readable = new Readable({ read() {} });
+    readable.push(buffer);
+    readable.push(null);
+    const resource = createAudioResource(readable, { inputType: StreamType.Raw });
+    this.player.play(resource);
+  }
+
   _killProcesses() {
     try { this._ytdlp?.kill(); } catch {}
     try { this._ffmpeg?.kill(); } catch {}
     this._ytdlp = null;
     this._ffmpeg = null;
+    this._mixer = null;
   }
 
   async _play(track) {
@@ -220,7 +237,9 @@ class MusicQueue {
       this._advance();
     });
 
-    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+    this._mixer = new PCMMixer();
+    ffmpeg.stdout.pipe(this._mixer);
+    const resource = createAudioResource(this._mixer, { inputType: StreamType.Raw });
     this.player.play(resource);
   }
 
@@ -269,7 +288,9 @@ class MusicQueue {
       this._advance();
     });
 
-    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+    this._mixer = new PCMMixer();
+    ffmpeg.stdout.pipe(this._mixer);
+    const resource = createAudioResource(this._mixer, { inputType: StreamType.Raw });
     this.player.play(resource);
   }
 
