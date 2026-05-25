@@ -42,4 +42,4 @@ function loadSound(filename) {
   });
 }
 
-module.exports = { getSoundFiles, loadSound };
+module.exports = { getSoundFiles, loadSound, SOUNDS_DIR };

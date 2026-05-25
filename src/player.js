@@ -17,7 +17,6 @@ const { spawn } = require('child_process');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
 const PCMMixer = require('./mixer');
-const { Readable } = require('stream');
 
 const YTDLP = path.join(__dirname, '..', 'yt-dlp.exe');
 
@@ -149,16 +148,26 @@ class MusicQueue {
     );
   }
 
-  playSound(buffer) {
+  playSound(buffer, filePath) {
     if (this._mixer && !this._mixer.destroyed) {
+      // Music is playing — mix the buffer directly into the stream
       this._mixer.addSound(buffer);
       return;
     }
-    // No music playing — play the sound directly
-    const readable = new Readable({ read() {} });
-    readable.push(buffer);
-    readable.push(null);
-    const resource = createAudioResource(readable, { inputType: StreamType.Raw });
+    // No music — stream the file through ffmpeg (same pattern as regular songs)
+    const ffmpeg = spawn(ffmpegPath, [
+      '-i', filePath,
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    ffmpeg.on('error', (err) => console.error('Sound ffmpeg error:', err.message));
+
+    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
     this.player.play(resource);
   }
 
